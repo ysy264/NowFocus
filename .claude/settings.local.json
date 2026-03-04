@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd C:\\\\Users\\\\Q\\\\Desktop\\\\Claude_code_test:*)",
+      "Bash(\"D:/All_APP/Git/bin/bash.exe\" -c \"cd /c/Users/Q/Desktop/Claude_code_test && rm -rf node_modules package-lock.json && npm install\")"
+    ]
+  }
+}
