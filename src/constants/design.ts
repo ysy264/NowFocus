@@ -13,8 +13,8 @@ export const CapsuleColors = {
   historyBlue:     '#4B71B8',            // 历史药丸：纯蓝
   inboxGray:       '#AAAAAA',            // 药盒胶囊
 
-  addBlack:        '#111111',            // 新增按钮左壳
-  addWhite:        '#F0EEE9',            // 新增按钮右壳
+  addBlack:        '#000000',            // 新增按钮左壳
+  addWhite:        '#FFFFFF',            // 新增按钮右壳
 
   textOnCapsule:   'rgba(255,255,255,0.92)',
   textActive:      '#1A1A1A',            // 拉开区域文字（深色背景下）
@@ -24,22 +24,19 @@ export const CapsuleColors = {
 // ─── 胶囊尺寸 ─────────────────────────────────────────────────
 // 公式: CONTAINER_W = HALF_W * 2 + OPEN_GAP * 2
 export const CapsuleDims = {
-  halfW:        110,   // 每个半壳宽
-  capsuleH:      52,   // 激活胶囊高
-  openGap:       42,   // 激活时每侧向外推的距离
-  containerW:   304,   // = 110*2 + 42*2
+  halfW:        80,    // 每个半壳宽（更接近胶囊比例）
+  capsuleH:     44,    // 激活胶囊高
+  openGap:      30,    // 激活时每侧向外推的最小距离（动态文字扩展）
+  containerW:  220,    // = 80*2 + 30*2
 
-  upcomingW:    240,   // 待做胶囊宽
-  upcomingH:     44,   // 待做胶囊高
+  histPillW:    48,    // 历史药丸宽
+  histPillH:    20,    // 历史药丸高
 
-  histPillW:     60,   // 历史药丸宽
-  histPillH:     24,   // 历史药丸高
+  threadW:       1.5,
+  stepH:        60,    // 胶囊中心间距
 
-  threadW:        1.5,
-  stepH:         72,   // 胶囊中心间距
-
-  addBtnW:      148,
-  addBtnH:       46,
+  addBtnW:     100,    // 与 Pencil 一致
+  addBtnH:      48,    // 与 Pencil 一致
 
   swipeThreshold: 72,  // 触发操作的最小滑动距离
 } as const;

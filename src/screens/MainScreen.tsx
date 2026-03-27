@@ -17,27 +17,30 @@ import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
   ScrollView,
   StyleSheet,
   StatusBar,
 } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
   runOnJS,
 } from 'react-native-reanimated';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector, TouchableOpacity, ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
 
-import { CapsuleColors, CapsuleDims, Spring, SCREEN_W, SCREEN_H } from '../constants/design';
+import { CapsuleColors, CapsuleDims, Spring, SCREEN_H } from '../constants/design';
 import { useTaskStore } from '../store/taskStore';
 import { CapsuleItem }    from '../components/CapsuleItem';
 import { AddCapsuleSheet } from '../components/AddCapsuleSheet';
+import { AddMenu }             from '../components/AddMenu';
+import { CapsuleDetailCard }  from '../components/CapsuleDetailCard';
 
-const MAX_HISTORY  = 3;
+
 const MAX_UPCOMING = 4;
+const MAX_HISTORY  = 3;
 
 // ─── 时间格式化 ────────────────────────────────────────────────
 function fmtTime(ts?: number): string {
@@ -56,188 +59,211 @@ export const MainScreen: React.FC = () => {
   const [sheetVisible,   setSheetVisible]   = useState(false);
   const [inboxVisible,   setInboxVisible]   = useState(false);
   const [historyVisible, setHistoryVisible] = useState(false);
-  // JS 侧的 peek 状态——用于控制 upcoming 区域的 pointerEvents
-  const [isPeeking, setIsPeeking] = useState(false);
+  // 详情模式
+  const [isDetail, setIsDetail] = useState(false);
 
-  const activeQueue       = useTaskStore(s => s.activeQueue);
-  const history           = useTaskStore(s => s.history);
-  const inbox             = useTaskStore(s => s.inbox);
-  const prioritizeCapsule = useTaskStore(s => s.prioritizeCapsule);
+  const activeQueue            = useTaskStore(s => s.activeQueue);
+  const history                = useTaskStore(s => s.history);
+  const inbox                  = useTaskStore(s => s.inbox);
+  const prioritizeCapsule      = useTaskStore(s => s.prioritizeCapsule);
+  const completeCurrentCapsule = useTaskStore(s => s.completeCurrentCapsule);
+  const snoozeCurrentCapsule   = useTaskStore(s => s.snoozeCurrentCapsule);
 
   const currentCapsule = activeQueue[0] ?? null;
   const upcomingSlice  = activeQueue.slice(1, 1 + MAX_UPCOMING);
-  const historySlice   = history.slice(0, MAX_HISTORY);
+  const historySlice   = history.slice(-MAX_HISTORY);   // 最近 N 条已完成
   const isEmpty        = activeQueue.length === 0;
 
-  // ─── Peek 动画 ──────────────────────────────────────────────
-  const peekProgress = useSharedValue(0);
+  // ─── Peek & 详情 动画 ───────────────────────────────────────
+  const peekProgress   = useSharedValue(0);
+  const detailProgress = useSharedValue(0);
 
-  const openPeek = useCallback(() => {
-    setIsPeeking(true);
+  const enterDetail = useCallback(() => {
+    setIsDetail(true);
+    peekProgress.value   = withSpring(0, Spring.snapBack);
+    detailProgress.value = withSpring(1, Spring.open);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+  }, []);
+
+  const exitDetail = useCallback(() => {
+    setIsDetail(false);
+    detailProgress.value = withSpring(0, Spring.snapBack);
+  }, []);
+
+  const hapticMedium = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   }, []);
 
-  const closePeek = useCallback(() => {
-    setIsPeeking(false);
-  }, []);
-
-  // 长按 Toggle：按一次开，再按一次关
+  // 长按 Toggle：专注模式（隐藏所有图标，只留激活胶囊）
   const longPress = Gesture.LongPress()
     .minDuration(400)
     .onStart(() => {
-      const isOpen = peekProgress.value > 0.5;
-      if (isOpen) {
+      if (peekProgress.value > 0.5) {
         peekProgress.value = withSpring(0, Spring.snapBack);
-        runOnJS(closePeek)();
       } else {
         peekProgress.value = withSpring(1, Spring.open);
-        runOnJS(openPeek)();
+        runOnJS(hapticMedium)();
       }
     });
 
-  const historyAnimStyle = useAnimatedStyle(() => ({
-    opacity:   peekProgress.value,
-    transform: [{ translateY: (1 - peekProgress.value) * -20 }],
+  // 专注模式 或 详情模式：图标淡出
+  const uiHideStyle = useAnimatedStyle(() => ({
+    opacity: 1 - Math.max(peekProgress.value, detailProgress.value),
   }));
 
-  const upcomingAnimStyle = useAnimatedStyle(() => ({
-    opacity:   peekProgress.value,
-    transform: [{ translateY: (1 - peekProgress.value) * 20 }],
-  }));
+  // 历史药丸区：专注/详情时向上飞出隐藏
+  const historyAnimStyle = useAnimatedStyle(() => {
+    const hide = Math.max(peekProgress.value, detailProgress.value);
+    return {
+      opacity:   1 - hide,
+      transform: [{ translateY: -hide * 40 }],
+    };
+  });
 
-  // ─── 提前某个待做项 ─────────────────────────────────────────
+  // 待做区：专注/详情时向下飞出隐藏
+  const upcomingAnimStyle = useAnimatedStyle(() => {
+    const hide = Math.max(peekProgress.value, detailProgress.value);
+    return {
+      opacity:   1 - hide,
+      transform: [{ translateY: hide * 40 }],
+    };
+  });
+
+  // 选择待做胶囊时：切换为该任务，同时收起（进入专注模式）
   const handlePrioritize = useCallback((id: string) => {
     prioritizeCapsule(id);
-    // 关闭 peek
-    setIsPeeking(false);
-    peekProgress.value = withSpring(0, Spring.snapBack);
+    peekProgress.value = withSpring(1, Spring.open);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, [prioritizeCapsule, peekProgress]);
 
+
   // ─── 渲染 ────────────────────────────────────────────────────
   return (
-    <GestureDetector gesture={longPress}>
-      <View style={styles.root}>
-        <StatusBar barStyle="dark-content" backgroundColor={CapsuleColors.background} />
+    <View style={styles.root}>
+      <StatusBar barStyle="dark-content" backgroundColor={CapsuleColors.background} />
 
-        {/* ── 左上角：历史池按钮 ── */}
-        <TouchableOpacity
-          style={styles.historyBtn}
-          onPress={() => setHistoryVisible(true)}
-          activeOpacity={0.7}
-        >
-          <View style={styles.historyBtnPill}>
-            <Text style={styles.historyBtnCount}>
-              {history.length > 99 ? '99+' : history.length}
-            </Text>
-          </View>
-        </TouchableOpacity>
+      {/* ── 长按专注模式区域：顶部图标 + 胶囊 + 待做区（不含底部按钮） ── */}
+      <GestureDetector gesture={longPress}>
+        <View style={styles.gestureArea}>
 
-        {/* ── 右上角：药盒按钮 ── */}
-        <TouchableOpacity
-          style={styles.inboxBtn}
-          onPress={() => setInboxVisible(true)}
-          activeOpacity={0.7}
-        >
-          <View style={styles.inboxCapsule}>
-            <View style={[styles.cornerHalf, { backgroundColor: CapsuleColors.inboxGray }]} />
-            <View style={[styles.cornerHalf, { backgroundColor: CapsuleColors.inboxGray, opacity: 0.45 }]} />
-          </View>
-          {inbox.length > 0 && (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{inbox.length}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
-
-        {/* ── 历史蓝药丸区（长按淡入，底部对齐） ── */}
-        <Animated.View
-          style={[styles.historySection, historyAnimStyle]}
-          pointerEvents="none"
-        >
-          {history.length > MAX_HISTORY && (
-            <Text style={styles.moreText}>+{history.length - MAX_HISTORY}</Text>
-          )}
-          {historySlice.map(cap => (
-            <View key={cap.id} style={styles.historyRow}>
-              <CapsuleItem variant="history" />
-            </View>
-          ))}
-        </Animated.View>
-
-        {/* ── 激活胶囊（常驻，竖向居中） ── */}
-        <View style={styles.activeSection}>
-          {isEmpty ? (
-            <View style={styles.emptyHint}>
-              <Text style={styles.emptyText}>
-                {'点击下方按钮添加第一个任务\n\n长按屏幕可查看队列\n右滑完成  左滑延后'}
-              </Text>
-            </View>
-          ) : (
-            <CapsuleItem
-              key={currentCapsule!.id}
-              variant="active"
-              title={currentCapsule?.title}
-            />
-          )}
-        </View>
-
-        {/* ── 待做胶囊区（长按淡入，顶部对齐，可点击提前） ── */}
-        <Animated.View
-          style={[styles.upcomingSection, upcomingAnimStyle]}
-          pointerEvents={isPeeking ? 'box-none' : 'none'}
-        >
-          {upcomingSlice.map(cap => (
+          {/* ── 顶部图标区（详情模式淡出） ── */}
+          <Animated.View style={[StyleSheet.absoluteFill, uiHideStyle]} pointerEvents="box-none">
             <TouchableOpacity
-              key={cap.id}
-              style={styles.upcomingRow}
-              onPress={() => handlePrioritize(cap.id)}
+              style={styles.historyBtn}
+              onPress={() => setHistoryVisible(true)}
               activeOpacity={0.7}
             >
-              <CapsuleItem variant="upcoming" title={cap.title} />
+              <Feather name="layers" size={16} color={CapsuleColors.historyBlue} />
+              <Text style={styles.historyBtnCount}>
+                {history.length > 99 ? '99+' : history.length}
+              </Text>
             </TouchableOpacity>
-          ))}
-          {activeQueue.length > MAX_UPCOMING + 1 && (
-            <Text style={[styles.moreText, { marginTop: 4 }]}>
-              还有 {activeQueue.length - MAX_UPCOMING - 1} 个待做
-            </Text>
-          )}
-          {isPeeking && upcomingSlice.length > 0 && (
-            <Text style={styles.peekHint}>点击可提前至下一个</Text>
-          )}
-        </Animated.View>
 
-        {/* ── 黑白添加按钮（底部常驻） ── */}
-        <View style={styles.addArea}>
-          <TouchableOpacity
-            style={styles.addBtn}
-            onPress={() => setSheetVisible(true)}
-            activeOpacity={0.78}
+            <TouchableOpacity
+              style={styles.inboxBtn}
+              onPress={() => setInboxVisible(true)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.inboxDot} />
+              <Text style={styles.inboxCount}>
+                {inbox.length > 99 ? '99+' : inbox.length}
+              </Text>
+            </TouchableOpacity>
+          </Animated.View>
+
+          {/* ── 历史药丸区（flex:1 撑开空间，pills 靠底对齐，飞上消失） ── */}
+          <Animated.View style={[styles.historySection, historyAnimStyle]} pointerEvents="none">
+            {history.length > MAX_HISTORY && (
+              <Text style={styles.historyOverflow}>+{history.length - MAX_HISTORY}</Text>
+            )}
+            {historySlice.map(cap => (
+              <View key={cap.id} style={styles.historyRow}>
+                <CapsuleItem variant="history" />
+              </View>
+            ))}
+          </Animated.View>
+
+          {/* ── 激活胶囊 ── */}
+          <View style={styles.activeSection}>
+            {isEmpty ? (
+              <View style={styles.emptyHint}>
+                <Text style={styles.emptyText}>
+                  {'点击下方按钮添加第一个任务\n\n长按屏幕专注模式\n右滑完成  左滑延后'}
+                </Text>
+              </View>
+            ) : (
+              <CapsuleItem
+                key={currentCapsule!.id}
+                variant="active"
+                title={currentCapsule?.title}
+                onTap={enterDetail}
+              />
+            )}
+          </View>
+
+          {/* ── 待做胶囊区 ── */}
+          <Animated.View
+            style={[styles.upcomingSection, upcomingAnimStyle]}
+            pointerEvents="box-none"
           >
-            <View style={[styles.addHalf, { backgroundColor: CapsuleColors.addBlack }]}>
-              <Text style={styles.addPlus}>+</Text>
-            </View>
-            <View style={[styles.addHalf, { backgroundColor: CapsuleColors.addWhite }]}>
-              <Text style={styles.addLabel}>添加</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
+            {upcomingSlice.map((cap, idx) => (
+              <TouchableOpacity
+                key={cap.id}
+                style={styles.upcomingRow}
+                onPress={() => handlePrioritize(cap.id)}
+                activeOpacity={0.7}
+              >
+                <CapsuleItem variant="upcoming" title={cap.title} index={idx} />
+              </TouchableOpacity>
+            ))}
+            {activeQueue.length > MAX_UPCOMING + 1 && (
+              <Text style={[styles.moreText, { marginTop: 4 }]}>
+                还有 {activeQueue.length - MAX_UPCOMING - 1} 个待做
+              </Text>
+            )}
+          </Animated.View>
 
-        {/* ── 弹层 ── */}
-        <AddCapsuleSheet
-          visible={sheetVisible}
-          onClose={() => setSheetVisible(false)}
+        </View>
+      </GestureDetector>
+
+      {/* ── 添加按钮区（在 longPress GestureDetector 外，避免手势冲突） ── */}
+      <Animated.View style={[styles.addArea, uiHideStyle]}
+        pointerEvents={isDetail ? 'none' : 'auto'}>
+        <AddMenu
+          onPressAdd={() => setSheetVisible(true)}
         />
-        <InboxSheet
-          visible={inboxVisible}
-          onClose={() => setInboxVisible(false)}
+      </Animated.View>
+
+      {/* ── 详情卡片 ── */}
+      {isDetail && currentCapsule && (
+        <CapsuleDetailCard
+          title={currentCapsule.title}
+          onClose={exitDetail}
+          onComplete={() => {
+            exitDetail();
+            completeCurrentCapsule();
+          }}
+          onSnooze={() => {
+            exitDetail();
+            snoozeCurrentCapsule();
+          }}
         />
-        <HistorySheet
-          visible={historyVisible}
-          onClose={() => setHistoryVisible(false)}
-        />
-      </View>
-    </GestureDetector>
+      )}
+
+      {/* ── 弹层 ── */}
+      <AddCapsuleSheet
+        visible={sheetVisible}
+        onClose={() => setSheetVisible(false)}
+      />
+      <InboxSheet
+        visible={inboxVisible}
+        onClose={() => setInboxVisible(false)}
+      />
+      <HistorySheet
+        visible={historyVisible}
+        onClose={() => setHistoryVisible(false)}
+      />
+    </View>
   );
 };
 
@@ -259,7 +285,7 @@ const InboxSheet: React.FC<{ visible: boolean; onClose: () => void }> = ({
         {inbox.length === 0 && (
           <Text style={styles.sheetEmpty}>药盒是空的</Text>
         )}
-        <ScrollView showsVerticalScrollIndicator={false}>
+        <GHScrollView showsVerticalScrollIndicator={false}>
           {inbox.map(cap => (
             <View key={cap.id} style={styles.sheetRow}>
               <Text style={styles.sheetRowTitle} numberOfLines={2}>{cap.title}</Text>
@@ -277,7 +303,7 @@ const InboxSheet: React.FC<{ visible: boolean; onClose: () => void }> = ({
               </TouchableOpacity>
             </View>
           ))}
-        </ScrollView>
+        </GHScrollView>
         <TouchableOpacity style={styles.sheetCloseBtn} onPress={onClose}>
           <Text style={styles.sheetCloseTxt}>关闭</Text>
         </TouchableOpacity>
@@ -304,7 +330,7 @@ const HistorySheet: React.FC<{ visible: boolean; onClose: () => void }> = ({
         {history.length === 0 && (
           <Text style={styles.sheetEmpty}>还没有完成任何任务</Text>
         )}
-        <ScrollView showsVerticalScrollIndicator={false}>
+        <GHScrollView showsVerticalScrollIndicator={false}>
           {history.map(cap => (
             <View key={cap.id} style={styles.sheetRow}>
               <View style={styles.histDot} />
@@ -328,7 +354,7 @@ const HistorySheet: React.FC<{ visible: boolean; onClose: () => void }> = ({
               </TouchableOpacity>
             </View>
           ))}
-        </ScrollView>
+        </GHScrollView>
         <TouchableOpacity style={styles.sheetCloseBtn} onPress={onClose}>
           <Text style={styles.sheetCloseTxt}>关闭</Text>
         </TouchableOpacity>
@@ -339,8 +365,7 @@ const HistorySheet: React.FC<{ visible: boolean; onClose: () => void }> = ({
 
 // ─── 样式 ─────────────────────────────────────────────────────
 const {
-  capsuleH, upcomingH, histPillH, stepH,
-  addBtnW, addBtnH,
+  capsuleH, histPillH, stepH,
 } = CapsuleDims;
 
 const styles = StyleSheet.create({
@@ -348,67 +373,58 @@ const styles = StyleSheet.create({
     flex:            1,
     backgroundColor: CapsuleColors.background,
   },
-
-  // ── 左上角：历史按钮 ─────────────────────────────────────
-  historyBtn: {
-    position: 'absolute',
-    left:      20,
-    top:       14,
-    zIndex:    20,
+  gestureArea: {
+    flex: 1,
   },
-  historyBtnPill: {
-    minWidth:        44,
-    height:           22,
-    borderRadius:     11,
-    backgroundColor: CapsuleColors.historyBlue,
-    opacity:          0.75,
-    alignItems:      'center',
-    justifyContent:  'center',
-    paddingHorizontal: 8,
+
+  // ── 左上角：历史按钮（layers 图标 + 数字） ───────────────
+  historyBtn: {
+    position:      'absolute',
+    left:           20,
+    top:            13,
+    zIndex:         20,
+    flexDirection:  'row',
+    alignItems:     'center',
+    gap:             6,
   },
   historyBtnCount: {
-    color:     '#fff',
-    fontSize:   11,
+    color:      CapsuleColors.historyBlue,
+    fontSize:    13,
     fontWeight: '700',
+    opacity:     0.85,
   },
 
-  // ── 右上角：药盒按钮 ─────────────────────────────────────
+  // ── 右上角：药盒按钮（红点 + 数字） ─────────────────────
   inboxBtn: {
-    position: 'absolute',
-    right:     20,
-    top:       14,
-    zIndex:    20,
+    position:      'absolute',
+    right:          20,
+    top:            14,
+    zIndex:         20,
+    flexDirection:  'row',
+    alignItems:     'center',
+    gap:             6,
   },
-  inboxCapsule: {
-    width:         44,
-    height:        22,
-    flexDirection: 'row',
-    borderRadius:  11,
-    overflow:      'hidden',
-  },
-  cornerHalf: {
-    flex:   1,
-    height: 22,
-  },
-  badge: {
-    position:        'absolute',
-    top:             -5,
-    right:           -6,
-    minWidth:         16,
-    height:           16,
-    borderRadius:      8,
+  inboxDot: {
+    width:           8,
+    height:          8,
+    borderRadius:    4,
     backgroundColor: CapsuleColors.activeRed,
-    alignItems:      'center',
-    justifyContent:  'center',
-    paddingHorizontal: 3,
   },
-  badgeText: {
-    color:     '#fff',
-    fontSize:   10,
+  inboxCount: {
+    color:      '#1A1A1A',
+    fontSize:    13,
     fontWeight: '700',
+    opacity:     0.7,
   },
 
   // ── 历史区 ────────────────────────────────────────────────
+  historyOverflow: {
+    color:        CapsuleColors.textMuted,
+    fontSize:     11,
+    fontWeight:   '500',
+    marginBottom:  4,
+    textAlign:    'center',
+  },
   historySection: {
     flex:           1,
     justifyContent: 'flex-end',
@@ -432,10 +448,10 @@ const styles = StyleSheet.create({
     flex:           1,
     justifyContent: 'flex-start',
     alignItems:     'center',
-    paddingTop:     (stepH - upcomingH) / 2,
+    paddingTop:     (stepH - capsuleH) / 2,
   },
   upcomingRow: {
-    marginBottom: stepH - upcomingH,
+    marginBottom: stepH - capsuleH,
     alignItems:   'center',
   },
   peekHint: {
@@ -462,34 +478,11 @@ const styles = StyleSheet.create({
     lineHeight:  22,
   },
 
-  // ── 添加按钮 ──────────────────────────────────────────────
+  // ── 添加按钮区 ────────────────────────────────────────────
   addArea: {
     alignItems:    'center',
     paddingBottom:  28,
     paddingTop:      8,
-  },
-  addBtn: {
-    width:         addBtnW,
-    height:        addBtnH,
-    flexDirection: 'row',
-    borderRadius:  addBtnH / 2,
-    overflow:      'hidden',
-  },
-  addHalf: {
-    width:          addBtnW / 2,
-    height:         addBtnH,
-    alignItems:     'center',
-    justifyContent: 'center',
-  },
-  addPlus: {
-    color:      '#FFFFFF',
-    fontSize:    22,
-    lineHeight:  28,
-  },
-  addLabel: {
-    color:      CapsuleColors.addBlack,
-    fontSize:   14,
-    fontWeight: '600',
   },
 
   // ── 弹层通用 ──────────────────────────────────────────────
